@@ -170,7 +170,7 @@ def read_sigle_data(data_dir,filename,use_gdc =False):
         return edge_att.data.numpy(),edge_index.data.numpy(),att,label,num_nodes
 
 if __name__ == "__main__":
-    data_dir = '/home/azureuser/projects/BrainGNN/data/ABIDE_pcp/cpac/filt_noglobal/raw'
+    data_dir = '/content/BrainGNN_Pytorch/data/ABIDE_pcp/cpac/filt_noglobal/raw'
     filename = '50346.h5'
     read_sigle_data(data_dir, filename)
 

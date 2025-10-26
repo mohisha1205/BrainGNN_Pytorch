@@ -36,7 +36,7 @@ warnings.filterwarnings("ignore")
 
 # Input data variables
 
-root_folder = '/home/azureuser/projects/BrainGNN/data/'
+root_folder = '/content/BrainGNN_Pytorch/data/'
 data_folder = os.path.join(root_folder, 'ABIDE_pcp/cpac/filt_noglobal')
 phenotype = os.path.join(root_folder, 'ABIDE_pcp/Phenotypic_V1_0b_preprocessed1.csv')
 
