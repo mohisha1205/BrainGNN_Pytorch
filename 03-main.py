@@ -10,7 +10,8 @@ from torch.optim import lr_scheduler
 from tensorboardX import SummaryWriter
 
 from imports.ABIDEDataset import ABIDEDataset
-from torch_geometric.data import DataLoader
+# from torch_geometric.data import DataLoader
+from torch_geometric.loader import DataLoader
 from net.braingnn import Network
 from imports.utils import train_val_test_split
 from sklearn.metrics import classification_report, confusion_matrix
@@ -196,6 +197,9 @@ def test_loss(loader,epoch):
 #######################################################################################
 ############################   Model Training #########################################
 #######################################################################################
+patience = 10  # Number of epochs to wait without improvement
+early_stop_counter = 0
+
 best_model_wts = copy.deepcopy(model.state_dict())
 best_loss = 1e10
 for epoch in range(0, num_epoch):
@@ -222,6 +226,14 @@ for epoch in range(0, num_epoch):
         best_model_wts = copy.deepcopy(model.state_dict())
         if save_model:
             torch.save(best_model_wts, os.path.join(opt.save_path,str(fold)+'.pth'))
+        early_stop_counter = 0  # Reset counter when improvement occurs
+    else:
+        early_stop_counter += 1
+        print(f"No improvement in validation loss for {early_stop_counter} epochs")
+
+    if early_stop_counter >= patience:
+        print(f"Early stopping triggered after {patience} epochs without improvement")
+        break
 
 #######################################################################################
 ######################### Testing on testing set ######################################
