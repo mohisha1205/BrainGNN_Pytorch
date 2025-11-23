@@ -16,6 +16,8 @@ from net.braingnn import Network
 from imports.utils import train_val_test_split
 from sklearn.metrics import classification_report, confusion_matrix
 
+import matplotlib.pyplot as plt
+
 torch.manual_seed(123)
 
 EPS = 1e-10
@@ -197,12 +199,19 @@ def test_loss(loader,epoch):
 #######################################################################################
 ############################   Model Training #########################################
 #######################################################################################
-patience = 10  # Number of epochs to wait without improvement
+patience = 20  # Number of epochs to wait without improvement
 early_stop_counter = 0
+epoch_count=0
+
+train_losses = []
+train_accuracies = []
+val_losses = []
+val_accuracies = []
 
 best_model_wts = copy.deepcopy(model.state_dict())
 best_loss = 1e10
 for epoch in range(0, num_epoch):
+    epoch_count += 1
     since  = time.time()
     tr_loss, s1_arr, s2_arr, w1, w2 = train(epoch)
     tr_acc = test_acc(train_loader)
@@ -220,20 +229,25 @@ for epoch in range(0, num_epoch):
     writer.add_histogram('Hist/hist_s1', s1_arr, epoch)
     writer.add_histogram('Hist/hist_s2', s2_arr, epoch)
 
+    train_losses.append(tr_loss)
+    train_accuracies.append(tr_acc)
+    val_losses.append(val_loss)
+    val_accuracies.append(val_acc)
+
     if val_loss < best_loss and epoch > 5:
         print("saving best model")
         best_loss = val_loss
         best_model_wts = copy.deepcopy(model.state_dict())
         if save_model:
             torch.save(best_model_wts, os.path.join(opt.save_path,str(fold)+'.pth'))
-        early_stop_counter = 0  # Reset counter when improvement occurs
-    else:
-        early_stop_counter += 1
-        print(f"No improvement in validation loss for {early_stop_counter} epochs")
+    #     early_stop_counter = 0  # Reset counter when improvement occurs
+    # else:
+    #     early_stop_counter += 1
+    #     print(f"No improvement in validation loss for {early_stop_counter} epochs")
 
-    if early_stop_counter >= patience:
-        print(f"Early stopping triggered after {patience} epochs without improvement")
-        break
+    # if early_stop_counter >= patience:
+    #     print(f"Early stopping triggered after {patience} epochs without improvement")
+    #     break
 
 #######################################################################################
 ######################### Testing on testing set ######################################
@@ -265,4 +279,44 @@ else:
    print("===========================")
    print("Test Acc: {:.7f}, Test Loss: {:.7f} ".format(test_accuracy, test_l))
    print(opt)
+#    print("Number of epochs run: ",epoch_count)
 
+
+epochs = range(1, len(val_losses) + 1)
+
+plt.figure(figsize=(12, 5))
+
+plt.subplot(1, 2, 1)
+plt.plot(epochs, train_losses, 'g-', label='Training Loss')
+plt.plot(epochs, val_losses, 'b-', label='Validation Loss')
+plt.xlabel('Epoch')
+plt.ylabel('Loss')
+plt.title('Loss over Epochs')
+plt.legend()
+
+plt.subplot(1, 2, 2)
+plt.plot(epochs, train_accuracies, 'g-', label='Training Accuracy')
+plt.plot(epochs, val_accuracies, 'r-', label='Validation Accuracy')
+plt.xlabel('Epoch')
+plt.ylabel('Accuracy')
+plt.title('Accuracy over Epochs')
+plt.legend()
+
+opt_info = (
+    f"Optimizer: {opt.optim}\n"
+    f"Learning Rate: {opt.lr}\n"
+    f"Weight Decay: {opt.weightdecay}\n"
+    f"Batch Size: {opt.batchSize}\n"
+    f"Total Epochs: {opt.n_epochs}\n"
+    f"No of epochs run: {epoch_count}\n"
+    f"Layers: {opt.layer}\n"
+    # f"Dropout Ratio: {opt.ratio}\n"
+)
+
+plt.figtext(0.5, -0.05, opt_info, wrap=True, horizontalalignment='center', fontsize=10)
+plt.figtext(0.5, -0.12, f"Best Validation Loss: {best_loss:.4f}", wrap=True, horizontalalignment='center', fontsize=10)
+
+plt.tight_layout()
+plt.subplots_adjust(bottom=0.25)  # make space for text
+plt.savefig("training_curves.png")
+print("Saved training_curves.png")
