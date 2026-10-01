@@ -10,13 +10,10 @@ from torch.optim import lr_scheduler
 from tensorboardX import SummaryWriter
 
 from imports.ABIDEDataset import ABIDEDataset
-# from torch_geometric.data import DataLoader
-from torch_geometric.loader import DataLoader
+from torch_geometric.data import DataLoader
 from net.braingnn import Network
 from imports.utils import train_val_test_split
 from sklearn.metrics import classification_report, confusion_matrix
-
-import matplotlib.pyplot as plt
 
 torch.manual_seed(123)
 
@@ -28,7 +25,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--epoch', type=int, default=0, help='starting epoch')
 parser.add_argument('--n_epochs', type=int, default=100, help='number of epochs of training')
 parser.add_argument('--batchSize', type=int, default=100, help='size of the batches')
-parser.add_argument('--dataroot', type=str, default='/content/BrainGNN_Pytorch/data/ABIDE_pcp/cpac/filt_noglobal', help='root directory of the dataset')
+parser.add_argument('--dataroot', type=str, default='./data/ABIDE_pcp/cpac/filt_noglobal', help='root directory of the dataset')
 parser.add_argument('--fold', type=int, default=0, help='training which fold')
 parser.add_argument('--lr', type = float, default=0.01, help='learning rate')
 parser.add_argument('--stepsize', type=int, default=20, help='scheduler step size')
@@ -69,18 +66,25 @@ writer = SummaryWriter(os.path.join('./log',str(fold)))
 ################## Define Dataloader ##################################
 
 dataset = ABIDEDataset(path,name)
-dataset.data.y = dataset.data.y.squeeze()
-dataset.data.x[dataset.data.x == float('inf')] = 0
+# 使用推荐的访问方式
+dataset._data.y = dataset._data.y.squeeze()
+dataset._data.x[dataset._data.x == float('inf')] = 0
 
 tr_index,val_index,te_index = train_val_test_split(fold=fold)
-train_dataset = dataset[tr_index]
-val_dataset = dataset[val_index]
-test_dataset = dataset[te_index]
 
+# 转换为列表以兼容新版PyG
+train_dataset = dataset[tr_index.tolist() if hasattr(tr_index, 'tolist') else tr_index]
+val_dataset = dataset[val_index.tolist() if hasattr(val_index, 'tolist') else val_index]
+test_dataset = dataset[te_index.tolist() if hasattr(te_index, 'tolist') else te_index]
 
-train_loader = DataLoader(train_dataset,batch_size=opt.batchSize, shuffle= True)
-val_loader = DataLoader(val_dataset, batch_size=opt.batchSize, shuffle=False)
-test_loader = DataLoader(test_dataset, batch_size=opt.batchSize, shuffle=False)
+# 减小batch size以降低内存占用
+# 如果内存不足，可以进一步减小到16或8
+effective_batch_size = min(opt.batchSize, 32)
+print(f"Using batch size: {effective_batch_size} (original: {opt.batchSize})")
+
+train_loader = DataLoader(train_dataset, batch_size=effective_batch_size, shuffle=True, num_workers=0, pin_memory=False)
+val_loader = DataLoader(val_dataset, batch_size=effective_batch_size, shuffle=False, num_workers=0, pin_memory=False)
+test_loader = DataLoader(test_dataset, batch_size=effective_batch_size, shuffle=False, num_workers=0, pin_memory=False)
 
 
 
@@ -118,8 +122,7 @@ def consist_loss(s):
 ###################### Network Training Function#####################################
 def train(epoch):
     print('train...........')
-    scheduler.step()
-
+    
     for param_group in optimizer.param_groups:
         print("LR", param_group['lr'])
     model.train()
@@ -159,6 +162,10 @@ def train(epoch):
 
         s1_arr = np.hstack(s1_list)
         s2_arr = np.hstack(s2_list)
+    
+    # 在epoch结束后调用scheduler.step()（PyTorch 1.1.0+的推荐做法）
+    scheduler.step()
+    
     return loss_all / len(train_dataset), s1_arr, s2_arr ,w1,w2
 
 
@@ -166,11 +173,13 @@ def train(epoch):
 def test_acc(loader):
     model.eval()
     correct = 0
-    for data in loader:
-        data = data.to(device)
-        outputs= model(data.x, data.edge_index, data.batch, data.edge_attr,data.pos)
-        pred = outputs[0].max(dim=1)[1]
-        correct += pred.eq(data.y).sum().item()
+    # 添加torch.no_grad()以节省内存
+    with torch.no_grad():
+        for data in loader:
+            data = data.to(device)
+            outputs= model(data.x, data.edge_index, data.batch, data.edge_attr,data.pos)
+            pred = outputs[0].max(dim=1)[1]
+            correct += pred.eq(data.y).sum().item()
 
     return correct / len(loader.dataset)
 
@@ -178,40 +187,33 @@ def test_loss(loader,epoch):
     print('testing...........')
     model.eval()
     loss_all = 0
-    for data in loader:
-        data = data.to(device)
-        output, w1, w2, s1, s2= model(data.x, data.edge_index, data.batch, data.edge_attr,data.pos)
-        loss_c = F.nll_loss(output, data.y)
+    # 添加torch.no_grad()以节省内存
+    with torch.no_grad():
+        for data in loader:
+            data = data.to(device)
+            output, w1, w2, s1, s2= model(data.x, data.edge_index, data.batch, data.edge_attr,data.pos)
+            loss_c = F.nll_loss(output, data.y)
 
-        loss_p1 = (torch.norm(w1, p=2)-1) ** 2
-        loss_p2 = (torch.norm(w2, p=2)-1) ** 2
-        loss_tpk1 = topk_loss(s1,opt.ratio)
-        loss_tpk2 = topk_loss(s2,opt.ratio)
-        loss_consist = 0
-        for c in range(opt.nclass):
-            loss_consist += consist_loss(s1[data.y == c])
-        loss = opt.lamb0*loss_c + opt.lamb1 * loss_p1 + opt.lamb2 * loss_p2 \
-                   + opt.lamb3 * loss_tpk1 + opt.lamb4 *loss_tpk2 + opt.lamb5* loss_consist
+            loss_p1 = (torch.norm(w1, p=2)-1) ** 2
+            loss_p2 = (torch.norm(w2, p=2)-1) ** 2
+            loss_tpk1 = topk_loss(s1,opt.ratio)
+            loss_tpk2 = topk_loss(s2,opt.ratio)
+            loss_consist = 0
+            for c in range(opt.nclass):
+                loss_consist += consist_loss(s1[data.y == c])
+            loss = opt.lamb0*loss_c + opt.lamb1 * loss_p1 + opt.lamb2 * loss_p2 \
+                       + opt.lamb3 * loss_tpk1 + opt.lamb4 *loss_tpk2 + opt.lamb5* loss_consist
 
-        loss_all += loss.item() * data.num_graphs
+            loss_all += loss.item() * data.num_graphs
     return loss_all / len(loader.dataset)
 
 #######################################################################################
 ############################   Model Training #########################################
 #######################################################################################
-patience = 20  # Number of epochs to wait without improvement
-early_stop_counter = 0
-epoch_count=0
-
-train_losses = []
-train_accuracies = []
-val_losses = []
-val_accuracies = []
-
 best_model_wts = copy.deepcopy(model.state_dict())
 best_loss = 1e10
+
 for epoch in range(0, num_epoch):
-    epoch_count += 1
     since  = time.time()
     tr_loss, s1_arr, s2_arr, w1, w2 = train(epoch)
     tr_acc = test_acc(train_loader)
@@ -229,25 +231,12 @@ for epoch in range(0, num_epoch):
     writer.add_histogram('Hist/hist_s1', s1_arr, epoch)
     writer.add_histogram('Hist/hist_s2', s2_arr, epoch)
 
-    train_losses.append(tr_loss)
-    train_accuracies.append(tr_acc)
-    val_losses.append(val_loss)
-    val_accuracies.append(val_acc)
-
     if val_loss < best_loss and epoch > 5:
         print("saving best model")
         best_loss = val_loss
         best_model_wts = copy.deepcopy(model.state_dict())
         if save_model:
             torch.save(best_model_wts, os.path.join(opt.save_path,str(fold)+'.pth'))
-    #     early_stop_counter = 0  # Reset counter when improvement occurs
-    # else:
-    #     early_stop_counter += 1
-    #     print(f"No improvement in validation loss for {early_stop_counter} epochs")
-
-    # if early_stop_counter >= patience:
-    #     print(f"Early stopping triggered after {patience} epochs without improvement")
-    #     break
 
 #######################################################################################
 ######################### Testing on testing set ######################################
@@ -255,16 +244,19 @@ for epoch in range(0, num_epoch):
 
 if opt.load_model:
     model = Network(opt.indim,opt.ratio,opt.nclass).to(device)
-    model.load_state_dict(torch.load(os.path.join(opt.save_path,str(fold)+'.pth')))
+    # 兼容不同设备的模型加载
+    model.load_state_dict(torch.load(os.path.join(opt.save_path,str(fold)+'.pth'), 
+                                     map_location=device))
     model.eval()
     preds = []
     correct = 0
-    for data in val_loader:
-        data = data.to(device)
-        outputs= model(data.x, data.edge_index, data.batch, data.edge_attr,data.pos)
-        pred = outputs[0].max(1)[1]
-        preds.append(pred.cpu().detach().numpy())
-        correct += pred.eq(data.y).sum().item()
+    with torch.no_grad():
+        for data in val_loader:
+            data = data.to(device)
+            outputs= model(data.x, data.edge_index, data.batch, data.edge_attr,data.pos)
+            pred = outputs[0].max(1)[1]
+            preds.append(pred.cpu().detach().numpy())
+            correct += pred.eq(data.y).sum().item()
     preds = np.concatenate(preds,axis=0)
     trues = val_dataset.data.y.cpu().detach().numpy()
     cm = confusion_matrix(trues,preds)
@@ -279,44 +271,4 @@ else:
    print("===========================")
    print("Test Acc: {:.7f}, Test Loss: {:.7f} ".format(test_accuracy, test_l))
    print(opt)
-#    print("Number of epochs run: ",epoch_count)
 
-
-epochs = range(1, len(val_losses) + 1)
-
-plt.figure(figsize=(12, 5))
-
-plt.subplot(1, 2, 1)
-plt.plot(epochs, train_losses, 'g-', label='Training Loss')
-plt.plot(epochs, val_losses, 'b-', label='Validation Loss')
-plt.xlabel('Epoch')
-plt.ylabel('Loss')
-plt.title('Loss over Epochs')
-plt.legend()
-
-plt.subplot(1, 2, 2)
-plt.plot(epochs, train_accuracies, 'g-', label='Training Accuracy')
-plt.plot(epochs, val_accuracies, 'r-', label='Validation Accuracy')
-plt.xlabel('Epoch')
-plt.ylabel('Accuracy')
-plt.title('Accuracy over Epochs')
-plt.legend()
-
-opt_info = (
-    f"Optimizer: {opt.optim}\n"
-    f"Learning Rate: {opt.lr}\n"
-    f"Weight Decay: {opt.weightdecay}\n"
-    f"Batch Size: {opt.batchSize}\n"
-    f"Total Epochs: {opt.n_epochs}\n"
-    f"No of epochs run: {epoch_count}\n"
-    f"Layers: {opt.layer}\n"
-    # f"Dropout Ratio: {opt.ratio}\n"
-)
-
-plt.figtext(0.5, -0.05, opt_info, wrap=True, horizontalalignment='center', fontsize=10)
-plt.figtext(0.5, -0.12, f"Best Validation Loss: {best_loss:.4f}", wrap=True, horizontalalignment='center', fontsize=10)
-
-plt.tight_layout()
-plt.subplots_adjust(bottom=0.25)  # make space for text
-plt.savefig("training_curves.png")
-print("Saved training_curves.png")
