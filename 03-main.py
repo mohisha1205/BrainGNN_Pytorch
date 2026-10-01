@@ -1,274 +1,243 @@
 import os
-import numpy as np
-import argparse
-import time
 import copy
+import argparse
+import csv
+import numpy as np
+import matplotlib.pyplot as plt
 
 import torch
 import torch.nn.functional as F
 from torch.optim import lr_scheduler
-from tensorboardX import SummaryWriter
 
-from imports.ABIDEDataset import ABIDEDataset
-from torch_geometric.data import DataLoader
+from torch_geometric.loader import DataLoader
 from net.braingnn import Network
-from imports.utils import train_val_test_split
-from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit
+from sklearn.metrics import confusion_matrix
 
 torch.manual_seed(123)
+np.random.seed(123)
 
 EPS = 1e-10
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-
 parser = argparse.ArgumentParser()
-parser.add_argument('--epoch', type=int, default=0, help='starting epoch')
-parser.add_argument('--n_epochs', type=int, default=100, help='number of epochs of training')
-parser.add_argument('--batchSize', type=int, default=100, help='size of the batches')
-parser.add_argument('--dataroot', type=str, default='./data/ABIDE_pcp/cpac/filt_noglobal', help='root directory of the dataset')
-parser.add_argument('--fold', type=int, default=0, help='training which fold')
-parser.add_argument('--lr', type = float, default=0.01, help='learning rate')
-parser.add_argument('--stepsize', type=int, default=20, help='scheduler step size')
-parser.add_argument('--gamma', type=float, default=0.5, help='scheduler shrinking rate')
-parser.add_argument('--weightdecay', type=float, default=5e-3, help='regularization')
-parser.add_argument('--lamb0', type=float, default=1, help='classification loss weight')
-parser.add_argument('--lamb1', type=float, default=0, help='s1 unit regularization')
-parser.add_argument('--lamb2', type=float, default=0, help='s2 unit regularization')
-parser.add_argument('--lamb3', type=float, default=0.1, help='s1 entropy regularization')
-parser.add_argument('--lamb4', type=float, default=0.1, help='s2 entropy regularization')
-parser.add_argument('--lamb5', type=float, default=0.1, help='s1 consistence regularization')
-parser.add_argument('--layer', type=int, default=2, help='number of GNN layers')
-parser.add_argument('--ratio', type=float, default=0.5, help='pooling ratio')
-parser.add_argument('--indim', type=int, default=200, help='feature dim')
-parser.add_argument('--nroi', type=int, default=200, help='num of ROIs')
-parser.add_argument('--nclass', type=int, default=2, help='num of classes')
-parser.add_argument('--load_model', type=bool, default=False)
-parser.add_argument('--save_model', type=bool, default=True)
-parser.add_argument('--optim', type=str, default='Adam', help='optimization method: SGD, Adam')
-parser.add_argument('--save_path', type=str, default='./model/', help='path to save model')
+parser.add_argument('--n_epochs', type=int, default=150)
+parser.add_argument('--batchSize', type=int, default=16)
+parser.add_argument('--lr', type=float, default=0.001)
+parser.add_argument('--stepsize', type=int, default=20)
+parser.add_argument('--gamma', type=float, default=0.5)
+parser.add_argument('--weightdecay', type=float, default=0.02)
+
+parser.add_argument('--lamb0', type=float, default=1)
+parser.add_argument('--lamb1', type=float, default=0.1)
+parser.add_argument('--lamb2', type=float, default=0.1)
+parser.add_argument('--lamb3', type=float, default=0.1)
+parser.add_argument('--lamb4', type=float, default=0.1)
+parser.add_argument('--lamb5', type=float, default=0.1)
+
+parser.add_argument('--ratio', type=float, default=0.2)
+parser.add_argument('--indim', type=int, default=200)
+parser.add_argument('--nclass', type=int, default=2)
+
+parser.add_argument('--save_path', type=str, default='./cv_models/')
+parser.add_argument('--plot_path', type=str, default='./plots/')
+parser.add_argument('--csv_path', type=str, default='./plots/fold_metrics.csv')
+parser.add_argument('--val_size', type=float, default=0.2)
+
 opt = parser.parse_args()
 
-if not os.path.exists(opt.save_path):
-    os.makedirs(opt.save_path)
+os.makedirs(opt.save_path, exist_ok=True)
+os.makedirs(opt.plot_path, exist_ok=True)
 
-#################### Parameter Initialization #######################
-path = opt.dataroot
-name = 'ABIDE'
-save_model = opt.save_model
-load_model = opt.load_model
-opt_method = opt.optim
-num_epoch = opt.n_epochs
-fold = opt.fold
-writer = SummaryWriter(os.path.join('./log',str(fold)))
+dataset = torch.load("./data/processed/abide_graph_dataset.pt", weights_only=False)
+labels = np.array([d.y.item() for d in dataset])
 
+print("Dataset size:", len(dataset))
 
-
-################## Define Dataloader ##################################
-
-dataset = ABIDEDataset(path,name)
-# 使用推荐的访问方式
-dataset._data.y = dataset._data.y.squeeze()
-dataset._data.x[dataset._data.x == float('inf')] = 0
-
-tr_index,val_index,te_index = train_val_test_split(fold=fold)
-
-# 转换为列表以兼容新版PyG
-train_dataset = dataset[tr_index.tolist() if hasattr(tr_index, 'tolist') else tr_index]
-val_dataset = dataset[val_index.tolist() if hasattr(val_index, 'tolist') else val_index]
-test_dataset = dataset[te_index.tolist() if hasattr(te_index, 'tolist') else te_index]
-
-# 减小batch size以降低内存占用
-# 如果内存不足，可以进一步减小到16或8
-effective_batch_size = min(opt.batchSize, 32)
-print(f"Using batch size: {effective_batch_size} (original: {opt.batchSize})")
-
-train_loader = DataLoader(train_dataset, batch_size=effective_batch_size, shuffle=True, num_workers=0, pin_memory=False)
-val_loader = DataLoader(val_dataset, batch_size=effective_batch_size, shuffle=False, num_workers=0, pin_memory=False)
-test_loader = DataLoader(test_dataset, batch_size=effective_batch_size, shuffle=False, num_workers=0, pin_memory=False)
-
-
-
-############### Define Graph Deep Learning Network ##########################
-model = Network(opt.indim,opt.ratio,opt.nclass).to(device)
-print(model)
-
-if opt_method == 'Adam':
-    optimizer = torch.optim.Adam(model.parameters(), lr= opt.lr, weight_decay=opt.weightdecay)
-elif opt_method == 'SGD':
-    optimizer = torch.optim.SGD(model.parameters(), lr =opt.lr, momentum = 0.9, weight_decay=opt.weightdecay, nesterov = True)
-
-scheduler = lr_scheduler.StepLR(optimizer, step_size=opt.stepsize, gamma=opt.gamma)
-
-############################### Define Other Loss Functions ########################################
-def topk_loss(s,ratio):
+def topk_loss(s, ratio):
     if ratio > 0.5:
-        ratio = 1-ratio
+        ratio = 1 - ratio
     s = s.sort(dim=1).values
-    res =  -torch.log(s[:,-int(s.size(1)*ratio):]+EPS).mean() -torch.log(1-s[:,:int(s.size(1)*ratio)]+EPS).mean()
-    return res
-
+    k = max(1, int(s.size(1) * ratio))
+    return -torch.log(s[:, -k:] + EPS).mean() - torch.log(1 - s[:, :k] + EPS).mean()
 
 def consist_loss(s):
     if len(s) == 0:
         return 0
     s = torch.sigmoid(s)
-    W = torch.ones(s.shape[0],s.shape[0])
-    D = torch.eye(s.shape[0])*torch.sum(W,dim=1)
-    L = D-W
-    L = L.to(device)
-    res = torch.trace(torch.transpose(s,0,1) @ L @ s)/(s.shape[0]*s.shape[0])
-    return res
+    W = torch.ones(s.shape[0], s.shape[0]).to(device)
+    D = torch.eye(s.shape[0]).to(device) * torch.sum(W, dim=1)
+    L = D - W
+    return torch.trace(s.t() @ L @ s) / (s.shape[0] * s.shape[0])
 
-###################### Network Training Function#####################################
-def train(epoch):
-    print('train...........')
-    
-    for param_group in optimizer.param_groups:
-        print("LR", param_group['lr'])
+def train_epoch(model, loader, optimizer, scheduler):
     model.train()
-    s1_list = []
-    s2_list = []
-    loss_all = 0
-    step = 0
-    for data in train_loader:
+    loss_all = 0.0
+
+    for data in loader:
         data = data.to(device)
         optimizer.zero_grad()
-        output, w1, w2, s1, s2 = model(data.x, data.edge_index, data.batch, data.edge_attr, data.pos)
-        s1_list.append(s1.view(-1).detach().cpu().numpy())
-        s2_list.append(s2.view(-1).detach().cpu().numpy())
+
+        output, w1, w2, s1, s2 = model(
+            data.x, data.edge_index, data.batch, data.edge_attr, data.pos
+        )
 
         loss_c = F.nll_loss(output, data.y)
+        loss_p1 = (torch.norm(w1, p=2) - 1) ** 2
+        loss_p2 = (torch.norm(w2, p=2) - 1) ** 2
+        loss_tpk1 = topk_loss(s1, opt.ratio)
+        loss_tpk2 = topk_loss(s2, opt.ratio)
 
-        loss_p1 = (torch.norm(w1, p=2)-1) ** 2
-        loss_p2 = (torch.norm(w2, p=2)-1) ** 2
-        loss_tpk1 = topk_loss(s1,opt.ratio)
-        loss_tpk2 = topk_loss(s2,opt.ratio)
         loss_consist = 0
         for c in range(opt.nclass):
-            loss_consist += consist_loss(s1[data.y == c])
-        loss = opt.lamb0*loss_c + opt.lamb1 * loss_p1 + opt.lamb2 * loss_p2 \
-                   + opt.lamb3 * loss_tpk1 + opt.lamb4 *loss_tpk2 + opt.lamb5* loss_consist
-        writer.add_scalar('train/classification_loss', loss_c, epoch*len(train_loader)+step)
-        writer.add_scalar('train/unit_loss1', loss_p1, epoch*len(train_loader)+step)
-        writer.add_scalar('train/unit_loss2', loss_p2, epoch*len(train_loader)+step)
-        writer.add_scalar('train/TopK_loss1', loss_tpk1, epoch*len(train_loader)+step)
-        writer.add_scalar('train/TopK_loss2', loss_tpk2, epoch*len(train_loader)+step)
-        writer.add_scalar('train/GCL_loss', loss_consist, epoch*len(train_loader)+step)
-        step = step + 1
+            cls_mask = (data.y == c)
+            if cls_mask.sum() > 0:
+                loss_consist += consist_loss(s1[cls_mask])
+
+        loss = (
+            opt.lamb0 * loss_c
+            + opt.lamb1 * loss_p1
+            + opt.lamb2 * loss_p2
+            + opt.lamb3 * loss_tpk1
+            + opt.lamb4 * loss_tpk2
+            + opt.lamb5 * loss_consist
+        )
 
         loss.backward()
-        loss_all += loss.item() * data.num_graphs
         optimizer.step()
+        loss_all += loss.item() * data.num_graphs
 
-        s1_arr = np.hstack(s1_list)
-        s2_arr = np.hstack(s2_list)
-    
-    # 在epoch结束后调用scheduler.step()（PyTorch 1.1.0+的推荐做法）
     scheduler.step()
-    
-    return loss_all / len(train_dataset), s1_arr, s2_arr ,w1,w2
-
-
-###################### Network Testing Function#####################################
-def test_acc(loader):
-    model.eval()
-    correct = 0
-    # 添加torch.no_grad()以节省内存
-    with torch.no_grad():
-        for data in loader:
-            data = data.to(device)
-            outputs= model(data.x, data.edge_index, data.batch, data.edge_attr,data.pos)
-            pred = outputs[0].max(dim=1)[1]
-            correct += pred.eq(data.y).sum().item()
-
-    return correct / len(loader.dataset)
-
-def test_loss(loader,epoch):
-    print('testing...........')
-    model.eval()
-    loss_all = 0
-    # 添加torch.no_grad()以节省内存
-    with torch.no_grad():
-        for data in loader:
-            data = data.to(device)
-            output, w1, w2, s1, s2= model(data.x, data.edge_index, data.batch, data.edge_attr,data.pos)
-            loss_c = F.nll_loss(output, data.y)
-
-            loss_p1 = (torch.norm(w1, p=2)-1) ** 2
-            loss_p2 = (torch.norm(w2, p=2)-1) ** 2
-            loss_tpk1 = topk_loss(s1,opt.ratio)
-            loss_tpk2 = topk_loss(s2,opt.ratio)
-            loss_consist = 0
-            for c in range(opt.nclass):
-                loss_consist += consist_loss(s1[data.y == c])
-            loss = opt.lamb0*loss_c + opt.lamb1 * loss_p1 + opt.lamb2 * loss_p2 \
-                       + opt.lamb3 * loss_tpk1 + opt.lamb4 *loss_tpk2 + opt.lamb5* loss_consist
-
-            loss_all += loss.item() * data.num_graphs
     return loss_all / len(loader.dataset)
 
-#######################################################################################
-############################   Model Training #########################################
-#######################################################################################
-best_model_wts = copy.deepcopy(model.state_dict())
-best_loss = 1e10
-
-for epoch in range(0, num_epoch):
-    since  = time.time()
-    tr_loss, s1_arr, s2_arr, w1, w2 = train(epoch)
-    tr_acc = test_acc(train_loader)
-    val_acc = test_acc(val_loader)
-    val_loss = test_loss(val_loader,epoch)
-    time_elapsed = time.time() - since
-    print('*====**')
-    print('{:.0f}m {:.0f}s'.format(time_elapsed // 60, time_elapsed % 60))
-    print('Epoch: {:03d}, Train Loss: {:.7f}, '
-          'Train Acc: {:.7f}, Test Loss: {:.7f}, Test Acc: {:.7f}'.format(epoch, tr_loss,
-                                                       tr_acc, val_loss, val_acc))
-
-    writer.add_scalars('Acc',{'train_acc':tr_acc,'val_acc':val_acc},  epoch)
-    writer.add_scalars('Loss', {'train_loss': tr_loss, 'val_loss': val_loss},  epoch)
-    writer.add_histogram('Hist/hist_s1', s1_arr, epoch)
-    writer.add_histogram('Hist/hist_s2', s2_arr, epoch)
-
-    if val_loss < best_loss and epoch > 5:
-        print("saving best model")
-        best_loss = val_loss
-        best_model_wts = copy.deepcopy(model.state_dict())
-        if save_model:
-            torch.save(best_model_wts, os.path.join(opt.save_path,str(fold)+'.pth'))
-
-#######################################################################################
-######################### Testing on testing set ######################################
-#######################################################################################
-
-if opt.load_model:
-    model = Network(opt.indim,opt.ratio,opt.nclass).to(device)
-    # 兼容不同设备的模型加载
-    model.load_state_dict(torch.load(os.path.join(opt.save_path,str(fold)+'.pth'), 
-                                     map_location=device))
+def eval_metrics(model, loader):
     model.eval()
-    preds = []
-    correct = 0
+    y_true = []
+    y_pred = []
+
     with torch.no_grad():
-        for data in val_loader:
+        for data in loader:
             data = data.to(device)
-            outputs= model(data.x, data.edge_index, data.batch, data.edge_attr,data.pos)
-            pred = outputs[0].max(1)[1]
-            preds.append(pred.cpu().detach().numpy())
-            correct += pred.eq(data.y).sum().item()
-    preds = np.concatenate(preds,axis=0)
-    trues = val_dataset.data.y.cpu().detach().numpy()
-    cm = confusion_matrix(trues,preds)
-    print("Confusion matrix")
-    print(classification_report(trues, preds))
+            output = model(data.x, data.edge_index, data.batch, data.edge_attr, data.pos)[0]
+            pred = output.max(1)[1]
+            y_true.extend(data.y.cpu().numpy().tolist())
+            y_pred.extend(pred.cpu().numpy().tolist())
 
-else:
-   model.load_state_dict(best_model_wts)
-   model.eval()
-   test_accuracy = test_acc(test_loader)
-   test_l= test_loss(test_loader,0)
-   print("===========================")
-   print("Test Acc: {:.7f}, Test Loss: {:.7f} ".format(test_accuracy, test_l))
-   print(opt)
+    cm = confusion_matrix(y_true, y_pred, labels=[0,1])
 
+    if cm.shape != (2, 2):
+        tn = fp = fn = tp = 0
+        if len(y_true) > 0:
+            unique = sorted(set(y_true + y_pred))
+            if unique == [0]:
+                tn = len(y_true)
+            elif unique == [1]:
+                tp = len(y_true)
+    else:
+        tn, fp, fn, tp = cm.ravel()
+
+    acc = (tp + tn) / (tp + tn + fp + fn + EPS)
+    sensitivity = tp / (tp + fn + EPS)
+    specificity = tn / (tn + fp + EPS)
+
+    return acc, sensitivity, specificity
+
+skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+fold_results = []
+
+for fold, (train_val_idx, test_idx) in enumerate(skf.split(np.zeros(len(labels)), labels)):
+    print(f"\n========== FOLD {fold + 1} ==========")
+
+    train_val_labels = labels[train_val_idx]
+
+    inner_split = StratifiedShuffleSplit(
+        n_splits=1,
+        test_size=opt.val_size,
+        random_state=42 + fold
+    )
+
+    inner_train_rel, inner_val_rel = next(inner_split.split(np.zeros(len(train_val_idx)), train_val_labels))
+    train_idx = train_val_idx[inner_train_rel]
+    val_idx = train_val_idx[inner_val_rel]
+
+    train_loader = DataLoader([dataset[i] for i in train_idx], batch_size=opt.batchSize, shuffle=True)
+    val_loader = DataLoader([dataset[i] for i in val_idx], batch_size=opt.batchSize, shuffle=False)
+    test_loader = DataLoader([dataset[i] for i in test_idx], batch_size=opt.batchSize, shuffle=False)
+
+    model = Network(opt.indim, opt.ratio, opt.nclass).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=opt.lr, weight_decay=opt.weightdecay)
+    scheduler = lr_scheduler.StepLR(optimizer, step_size=opt.stepsize, gamma=opt.gamma)
+
+    best_val = -1.0
+    patience = 12
+    counter = 0
+    best_wts = copy.deepcopy(model.state_dict())
+
+    train_acc_hist = []
+    val_acc_hist = []
+
+    for epoch in range(opt.n_epochs):
+        loss = train_epoch(model, train_loader, optimizer, scheduler)
+        tr_acc, _, _ = eval_metrics(model, train_loader)
+        val_acc, _, _ = eval_metrics(model, val_loader)
+
+        train_acc_hist.append(tr_acc)
+        val_acc_hist.append(val_acc)
+
+        print(f"Epoch {epoch:03d} | Loss {loss:.4f} | Train {tr_acc:.4f} | Val {val_acc:.4f}")
+
+        if val_acc > best_val:
+            best_val = val_acc
+            counter = 0
+            best_wts = copy.deepcopy(model.state_dict())
+            torch.save(best_wts, f"{opt.save_path}/fold{fold + 1}.pth")
+        else:
+            counter += 1
+
+        if counter >= patience:
+            print("Early stopping")
+            break
+
+    model.load_state_dict(best_wts)
+    test_acc, test_sens, test_spec = eval_metrics(model, test_loader)
+
+    print("Fold Test Accuracy:", test_acc)
+    print("Fold Sensitivity:", test_sens)
+    print("Fold Specificity:", test_spec)
+
+    fold_results.append({
+        "fold": fold + 1,
+        "accuracy": test_acc,
+        "sensitivity": test_sens,
+        "specificity": test_spec
+    })
+
+    plt.figure()
+    plt.plot(train_acc_hist, label="Train")
+    plt.plot(val_acc_hist, label="Val")
+    plt.title(f"Fold {fold + 1}")
+    plt.xlabel("Epoch")
+    plt.ylabel("Accuracy")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(f"{opt.plot_path}/fold{fold + 1}.png")
+    plt.close()
+
+with open(opt.csv_path, "w", newline="") as f:
+    writer = csv.DictWriter(f, fieldnames=["fold", "accuracy", "sensitivity", "specificity"])
+    writer.writeheader()
+    writer.writerows(fold_results)
+
+accs = [x["accuracy"] for x in fold_results]
+sens = [x["sensitivity"] for x in fold_results]
+spec = [x["specificity"] for x in fold_results]
+
+print("\n================ FINAL RESULTS ================")
+print("Fold Accuracies:", accs)
+print("Mean Accuracy:", np.mean(accs))
+print("Std Accuracy:", np.std(accs))
+print("Mean Sensitivity:", np.mean(sens))
+print("Std Sensitivity:", np.std(sens))
+print("Mean Specificity:", np.mean(spec))
+print("Std Specificity:", np.std(spec))
+print("Saved CSV to:", opt.csv_path)
