@@ -72,8 +72,8 @@ class Network(torch.nn.Module):
         x = F.dropout(x, p=0.5, training=self.training)
         x = F.log_softmax(self.fc3(x), dim=-1)
 
-        w1 = self.pool1.score if hasattr(self.pool1, 'score') else (self.pool1.weight if hasattr(self.pool1, 'weight') else torch.ones(1))
-        w2 = self.pool2.score if hasattr(self.pool2, 'score') else (self.pool2.weight if hasattr(self.pool2, 'weight') else torch.ones(1))
+        w1 = self.pool1.select.weight if hasattr(self.pool1, 'score') else (self.pool1.weight if hasattr(self.pool1, 'weight') else torch.ones(1))
+        w2 = self.pool2.select.weight if hasattr(self.pool2, 'score') else (self.pool2.weight if hasattr(self.pool2, 'weight') else torch.ones(1))
         
         return x, w1, w2, torch.sigmoid(score1).view(x.size(0),-1), torch.sigmoid(score2).view(x.size(0),-1)
 
