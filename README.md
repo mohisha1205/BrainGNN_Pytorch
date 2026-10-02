@@ -17,8 +17,11 @@ the dataset building, training and evaluation code has been rewritten.
 | Compatibility | `scripts/patch_deepdish.py`: patches deepdish for NumPy 2 (removed `np.unicode_`, `np.string_`, `np.object`, `np.ComplexWarning`) |
 | Dataset | New `imports/build_abide_dataset.py`: builds a single `abide_graph_dataset.pt` directly from the `.mat` files |
 | Training | `03-main.py` rewritten: nested split (5-fold stratified CV + stratified 20% validation split inside each fold), early stopping on validation accuracy, sensitivity/specificity, per-fold plots and a CSV of metrics |
+| Model | `net/braingnn.py`: MLP bottleneck 32 → **16** → 2 (was 32 → 512 → 2). Fixed the unit loss for PyG ≥ 2.3 (`pool.select.weight`) |
+| Hyperparameters | lr 0.01 → 0.001, weight decay 0.005 → 0.02, StepLR step 20 → 10, batch 100 → 16, early stopping with patience 12 (`--patience`) |
+| Environment (Colab) | New `requirements-colab.txt` with only the packages Colab lacks |
 | Visualisation | New `scripts/visualize_connectivity.py` for per-subject connectivity heatmaps and BOLD time series |
-| Environment | `requirements.txt` updated to the versions used on Colab; outdated `environment.yml` (torch 1.13) removed |
+| Environment | `requirements.txt` updated to the versions used on Colab;|
 
 ## Graph construction
 
@@ -41,7 +44,6 @@ BrainGNN_Pytorch/
 ├── 02-process_data.py            # Original .h5 processing pipeline (optional, not used by 03-main.py)
 ├── 03-main.py                    # Train / evaluate BrainGNN with nested 5-fold CV
 ├── requirements.txt
-├── TRAINING_TIPS.md              # Training notes from the reference repo (Chinese)
 ├── data/
 │   └── subject_ID.txt            # 1,035 ABIDE subject IDs
 ├── imports/
@@ -119,32 +121,33 @@ Main arguments:
 | `--lamb0`…`--lamb5` | 1, 0.1 … | Loss weights: CE, unit-norm ×2, TopK ×2, group-consistency |
 | `--val_size` | 0.2 | Validation fraction inside each training fold |
 
-Outputs: `cv_models/fold{k}.pth`, `plots/fold{k}.png` (train/val accuracy curves),
-`plots/fold_metrics.csv`.
+<!-- Outputs: `cv_models/fold{k}.pth`, `plots/fold{k}.png` (train/val accuracy curves),
+`plots/fold_metrics.csv`. -->
 
-### 5. (Optional) Visualise a subject
+<!-- ### 5. (Optional) Visualise a subject
 
 ```bash
 python scripts/visualize_connectivity.py --subject 50003 --save_dir plots/subject_50003
-```
+``` -->
 
-### On Google Colab
+<!-- ### On Google Colab
 
 `notebooks/BrainGNN_ABIDE_colab.ipynb` is the original development notebook (outputs
-cleared). Its first cell lists the shorter set of commands to use with this repo.
+cleared). Its first cell lists the shorter set of commands to use with this repo. -->
 
 ## Current results
 
-5-fold stratified CV, 1,035 subjects (530 controls / 505 ASD):
+Stratified 5-fold CV, 1,035 subjects (530 TC / 505 ASD):
 
 | Metric | Mean ± Std |
 |---|---|
-| Accuracy | 0.577 ± 0.022 |
-| Sensitivity (ASD) | 0.586 ± 0.091 |
-| Specificity (TC) | 0.568 ± 0.100 |
+| Accuracy | 62.9 ± 2.0% |
+| Sensitivity (ASD) | 65.5 ± 6.0% |
+| Specificity (TC) | 60.4 ± 3.7% |
 
-Per-fold numbers are in [`results/README.md`](results/README.md). These results are
-still well below the ~70% reported for BrainGNN on ABIDE. Tuning is in progress.
+<!-- The baseline (original hyperparameters) reached ~51.2%. Per-fold numbers and ablations
+are in [`results/README.md`](results/README.md). This is in line with the 63–67%
+typically reported for single-modality rs-fMRI classification on the full ABIDE dataset.
 
 ## Credits
 
@@ -152,4 +155,4 @@ still well below the ~70% reported for BrainGNN on ABIDE. Tuning is in progress.
   Analysis", *Medical Image Analysis* 74 (2021). Original code: https://github.com/xxlya/BrainGNN_Pytorch
 - Reference fork: https://github.com/xxxhois/BrainGNN_Pytorch
 - Data fetching code adapted from Kunda *et al.* / Parisot *et al.* (GPL-3.0, see file headers)
-- ABIDE Preprocessed Connectomes Project: http://preprocessed-connectome-project.org/abide/
+- ABIDE Preprocessed Connectomes Project: http://preprocessed-connectome-project.org/abide/ --> -->

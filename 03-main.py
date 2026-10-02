@@ -38,6 +38,7 @@ parser.add_argument('--lamb5', type=float, default=0.1)
 parser.add_argument('--ratio', type=float, default=0.2)
 parser.add_argument('--indim', type=int, default=200)
 parser.add_argument('--nclass', type=int, default=2)
+parser.add_argument('--patience', type=int, default=12, help='early-stopping patience (epochs)')
 
 parser.add_argument('--save_path', type=str, default='./cv_models/')
 parser.add_argument('--plot_path', type=str, default='./plots/')
@@ -169,7 +170,7 @@ for fold, (train_val_idx, test_idx) in enumerate(skf.split(np.zeros(len(labels))
     scheduler = lr_scheduler.StepLR(optimizer, step_size=opt.stepsize, gamma=opt.gamma)
 
     best_val = -1.0
-    patience = 12
+    patience = opt.patience
     counter = 0
     best_wts = copy.deepcopy(model.state_dict())
 

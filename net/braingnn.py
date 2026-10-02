@@ -26,7 +26,7 @@ class Network(torch.nn.Module):
         self.indim = indim
         self.dim1 = 32
         self.dim2 = 32
-        self.dim3 = 512
+        self.dim3 = 16
         self.dim4 = 256
         self.dim5 = 8
         self.k = k

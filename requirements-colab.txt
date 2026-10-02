@@ -1,0 +1,10 @@
+# Only the packages Colab doesn't ship with. Install with:
+#   pip install -r requirements-colab.txt -f https://data.pyg.org/whl/torch-<ver>+<cuXXX|cpu>.html
+nilearn==0.13.1
+tensorboardX==2.6.5
+deepdish==0.3.7
+torch_geometric==2.7.0
+torch_scatter
+torch_sparse
+torch_cluster
+torch_spline_conv
