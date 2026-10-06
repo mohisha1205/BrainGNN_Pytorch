@@ -36,23 +36,37 @@ parser.add_argument('--lamb4', type=float, default=0.1)
 parser.add_argument('--lamb5', type=float, default=0.1)
 
 parser.add_argument('--ratio', type=float, default=0.2)
-parser.add_argument('--indim', type=int, default=200)
+# parser.add_argument('--indim', type=int, default=200)
+parser.add_argument('--atlas', type=str, default='cc200', help='must match the atlas used to build the dataset')
 parser.add_argument('--nclass', type=int, default=2)
 parser.add_argument('--patience', type=int, default=12, help='early-stopping patience (epochs)')
 
-parser.add_argument('--save_path', type=str, default='./cv_models/')
-parser.add_argument('--plot_path', type=str, default='./plots/')
-parser.add_argument('--csv_path', type=str, default='./plots/fold_metrics.csv')
+# Output paths default to per-atlas folders (./cv_models/<atlas>/, ./plots/<atlas>/)
+parser.add_argument('--save_path', type=str, default=None)
+parser.add_argument('--plot_path', type=str, default=None)
+parser.add_argument('--csv_path', type=str, default=None)
 parser.add_argument('--val_size', type=float, default=0.2)
 
 opt = parser.parse_args()
 
+opt.save_path = opt.save_path or os.path.join('./cv_models', opt.atlas)
+opt.plot_path = opt.plot_path or os.path.join('./plots', opt.atlas)
+opt.csv_path = opt.csv_path or os.path.join(opt.plot_path, 'fold_metrics.csv')
+
 os.makedirs(opt.save_path, exist_ok=True)
 os.makedirs(opt.plot_path, exist_ok=True)
 
-dataset = torch.load("./data/processed/abide_graph_dataset.pt", weights_only=False)
+dataset_file = f"./data/processed/abide_graph_dataset_{opt.atlas}.pt"
+if not os.path.exists(dataset_file):
+    raise SystemExit(f"{dataset_file} not found - run: python imports/build_abide_dataset.py --atlas {opt.atlas}")
+dataset = torch.load(dataset_file, weights_only=False)
 labels = np.array([d.y.item() for d in dataset])
 
+# Node count and feature size depend on the atlas (cc200: 200, cc400: 392, ho: 111, ...)
+opt.nroi = dataset[0].num_nodes
+opt.indim = dataset[0].num_node_features
+
+print(f"Atlas: {opt.atlas} | ROIs: {opt.nroi} | node features: {opt.indim}")
 print("Dataset size:", len(dataset))
 
 def topk_loss(s, ratio):
@@ -165,7 +179,7 @@ for fold, (train_val_idx, test_idx) in enumerate(skf.split(np.zeros(len(labels))
     val_loader = DataLoader([dataset[i] for i in val_idx], batch_size=opt.batchSize, shuffle=False)
     test_loader = DataLoader([dataset[i] for i in test_idx], batch_size=opt.batchSize, shuffle=False)
 
-    model = Network(opt.indim, opt.ratio, opt.nclass).to(device)
+    model = Network(opt.indim, opt.ratio, opt.nclass, R=opt.nroi).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=opt.lr, weight_decay=opt.weightdecay)
     scheduler = lr_scheduler.StepLR(optimizer, step_size=opt.stepsize, gamma=opt.gamma)
 

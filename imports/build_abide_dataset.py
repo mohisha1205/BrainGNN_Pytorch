@@ -1,3 +1,4 @@
+import argparse
 import os
 import numpy as np
 import torch
@@ -14,7 +15,21 @@ from gdc import GDC
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_ROOT = os.path.join(REPO_ROOT, "data", "ABIDE_pcp", "cpac", "filt_noglobal")
 PHENO_CSV = os.path.join(REPO_ROOT, "data", "ABIDE_pcp", "Phenotypic_V1_0b_preprocessed1.csv")
-SAVE_PATH = os.path.join(REPO_ROOT, "data", "processed", "abide_graph_dataset.pt")
+# SAVE_PATH = os.path.join(REPO_ROOT, "data", "processed", "abide_graph_dataset.pt")
+PROCESSED_DIR = os.path.join(REPO_ROOT, "data", "processed")
+
+
+def dataset_path(atlas):
+    """One dataset file per atlas, e.g. data/processed/abide_graph_dataset_cc200.pt"""
+    return os.path.join(PROCESSED_DIR, f"abide_graph_dataset_{atlas}.pt")
+
+
+def load_conn(sid, atlas, kind):
+    """kind: 'correlation' or 'partial_correlation'"""
+    path = os.path.join(DATA_ROOT, str(sid), f"{sid}_{atlas}_{kind}.mat")
+    mat = loadmat(path)["connectivity"]
+    # Guard against NaN/inf (e.g. an all-zero ROI time series in some atlases)
+    return np.nan_to_num(mat, nan=0.0, posinf=0.0, neginf=0.0)
 
 K = 10
 THRESH = 0.05
@@ -45,7 +60,10 @@ def normalize_adj(A):
     return deg_inv_sqrt[:, None] * A * deg_inv_sqrt[None, :]
 
 
-def build_dataset():
+def build_dataset(atlas):
+
+    save_path = dataset_path(atlas)
+    print(f"Atlas: {atlas}")
 
     pheno = pd.read_csv(PHENO_CSV)
 
@@ -60,13 +78,25 @@ def build_dataset():
     ]
     subjects = sorted(subjects)
 
+        # Keep only subjects that have both matrices for this atlas
+    have = [
+        sid for sid in subjects
+        if all(os.path.exists(os.path.join(DATA_ROOT, str(sid), f"{sid}_{atlas}_{k}.mat"))
+               for k in ("correlation", "partial_correlation"))
+    ]
+    if len(have) < len(subjects):
+        print(f"WARNING: {len(subjects) - len(have)} subjects have no {atlas} matrices and are skipped "
+              f"(run: python 01-fetch_data.py --atlas {atlas})")
+    subjects = have
+    if not subjects:
+        raise SystemExit(f"No {atlas} connectivity matrices found in {DATA_ROOT}")
+
     # -------- PASS 1 : GLOBAL FEATURE NORMALIZATION --------
 
     all_features = []
 
     for sid in tqdm(subjects, desc="Collecting features"):
-        corr_file = os.path.join(DATA_ROOT, str(sid), f"{sid}_cc200_correlation.mat")
-        corr = loadmat(corr_file)["connectivity"]
+        corr = load_conn(sid, atlas, "correlation")
         all_features.append(corr)
 
     all_features = np.vstack(all_features)
@@ -94,13 +124,8 @@ def build_dataset():
 
     for sid in tqdm(subjects, desc="Building graphs"):
 
-        subj_dir = os.path.join(DATA_ROOT, str(sid))
-
-        pcorr_file = os.path.join(subj_dir, f"{sid}_cc200_partial_correlation.mat")
-        corr_file = os.path.join(subj_dir, f"{sid}_cc200_correlation.mat")
-
-        pcorr = loadmat(pcorr_file)["connectivity"]
-        corr = loadmat(corr_file)["connectivity"]
+        pcorr = load_conn(sid, atlas, "partial_correlation")
+        corr = load_conn(sid, atlas, "correlation")        
 
         pcorr = sparsify(pcorr)
         pcorr = normalize_adj(pcorr)
@@ -114,7 +139,8 @@ def build_dataset():
 
         y = label_map[sid]
 
-        pos = torch.eye(200)
+        n_roi = corr.shape[0]          # 200 for cc200, 392 for cc400, 111 for ho, ...
+        pos = torch.eye(n_roi)
 
         data = Data(
             x=torch.tensor(X, dtype=torch.float),
@@ -131,13 +157,18 @@ def build_dataset():
         edge_counts.append(data.edge_index.shape[1])
 
     print("\nDataset built.")
+    print("ROIs (nodes) per graph:", dataset[0].num_nodes)
     print("Average edges per graph:", np.mean(edge_counts))
 
-    os.makedirs(os.path.dirname(SAVE_PATH), exist_ok=True)
-    torch.save(dataset, SAVE_PATH)
+    os.makedirs(PROCESSED_DIR, exist_ok=True)
+    torch.save(dataset, save_path)
 
-    print("Saved dataset at:", SAVE_PATH)
+    print("Saved dataset at:", save_path)
 
 
 if __name__ == "__main__":
-    build_dataset()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--atlas", default="cc200",
+                        help="Atlas used in 01-fetch_data.py: cc200, cc400, ho, aal, ez, tt, dosenbach160")
+    args = parser.parse_args()
+    build_dataset(args.atlas)    
